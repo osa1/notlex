@@ -43,56 +43,102 @@ impl CharSet {
                 false
             }
 
-            &CharSet::Epsilon => false,
+            &CharSet::Epsilon => true,
         }
     }
 }
 
 pub struct NFA {
-    cur_states: Vec<usize>,
+    cur_states: HashSet<usize>,
     transitions: HashMap<usize, Vec<(CharSet, usize)>>,
     accepting: HashSet<usize>,
 }
 
 impl NFA {
+    pub fn new(transitions: HashMap<usize, Vec<(CharSet, usize)>>, accepting: HashSet<usize>) -> NFA {
+        let mut nfa = NFA {
+            cur_states: HashSet::new(),
+            transitions: transitions,
+            accepting: accepting,
+        };
+        nfa.reset();
+        nfa
+    }
+
     pub fn run(&mut self, mut chars: Chars) -> bool {
         loop {
-            let accepting = self.check_accepting();
-            if accepting {
-                return accepting;
-            }
-
             match chars.next() {
                 None => {
-                    return accepting;
+                    return self.check_accepting();
                 }
                 Some(c) => {
-                    let mut new_states: Vec<usize> = Vec::with_capacity(self.cur_states.len());
-                    for cur_state in self.cur_states.iter().cloned() {
-                        match self.transitions.get(&cur_state) {
-                            None => { return false; },
-                            Some(ts) => {
-                                for &(ref cs, ref t) in ts {
-                                    if cs.test(c) {
-                                        new_states.push(*t);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    std::mem::swap(&mut self.cur_states, &mut new_states);
+                    self.step(c);
                 }
             }
         }
     }
 
-    fn check_accepting(&self) -> bool {
+    pub fn reset(&mut self) {
+        self.cur_states.clear();
+        self.cur_states.insert(0);
+        self.take_epsilons();
+    }
+
+    pub fn feed(&mut self, c: char) {
+        self.step(c);
+    }
+
+    pub fn check_accepting(&self) -> bool {
         for state in self.cur_states.iter() {
             if self.accepting.contains(state) {
                 return true;
             }
         }
         false
+    }
+
+    fn step(&mut self, c: char) {
+        let mut new_states: HashSet<usize> = HashSet::with_capacity(self.cur_states.len());
+        for cur_state in self.cur_states.iter() {
+            if let Some(ts) = self.transitions.get(cur_state) {
+                for &(ref cs, ref t) in ts {
+                    if cs.test(c) {
+                        new_states.insert(*t);
+                    }
+                }
+            }
+        }
+        std::mem::swap(&mut self.cur_states, &mut new_states);
+
+        self.take_epsilons();
+    }
+
+    fn take_epsilons(&mut self) {
+        let mut new_states = HashSet::with_capacity(self.cur_states.len());
+
+        loop {
+            for cur_state in self.cur_states.iter() {
+                if let Some(ts) = self.transitions.get(cur_state) {
+                    for &(ref cs, ref t) in ts.iter() {
+                        match cs {
+                            &CharSet::Epsilon => {
+                                if !self.cur_states.contains(t) {
+                                    new_states.insert(*t);
+                                }
+                            },
+                            _ => {}
+                        }
+                    }
+                }
+            }
+
+            if new_states.is_empty() {
+                break;
+            } else {
+                self.cur_states.extend(&new_states);
+                new_states.clear();
+            }
+        }
     }
 }
 
@@ -114,14 +160,18 @@ pub struct NFABuilder {
 }
 
 impl NFABuilder {
-    pub fn new() -> NFABuilder {
-        NFABuilder {
+    pub fn build(regex: &Regex) -> NFA {
+        let mut builder = NFABuilder {
             next_state: 1,
             transitions: HashMap::new(),
-        }
+        };
+
+        let accepting_states = builder.add_regex(&vec![0], regex);
+
+        NFA::new(builder.transitions, HashSet::from_iter(accepting_states.into_iter()))
     }
 
-    pub fn build(&mut self, current_states: &[usize], regex: &Regex) -> Vec<usize> {
+    fn add_regex(&mut self, current_states: &[usize], regex: &Regex) -> Vec<usize> {
         match regex {
 
             &Regex::Eps => {
@@ -139,13 +189,13 @@ impl NFABuilder {
             }
 
             &Regex::Seq(ref r1, ref r2) => {
-                let next_states = self.build(current_states, r1);
-                self.build(&next_states, r2)
+                let next_states = self.add_regex(current_states, r1);
+                self.add_regex(&next_states, r2)
             }
 
             &Regex::Or(ref r1, ref r2) => {
-                let mut next_states_1 = self.build(current_states, r1);
-                let mut next_states_2 = self.build(current_states, r2);
+                let mut next_states_1 = self.add_regex(current_states, r1);
+                let mut next_states_2 = self.add_regex(current_states, r2);
                 let mut ret = Vec::with_capacity(next_states_1.len() + next_states_2.len());
                 ret.append(&mut next_states_1);
                 ret.append(&mut next_states_2);
@@ -153,7 +203,7 @@ impl NFABuilder {
             }
 
             &Regex::Star(ref r) => {
-                let next_states = self.build(current_states, r);
+                let next_states = self.add_regex(current_states, r);
                 // add epsilon transitions from next states to current states
                 for next_state in next_states {
                     for current_state in current_states {
@@ -164,25 +214,17 @@ impl NFABuilder {
             }
 
             &Regex::Plus(ref r) => {
-                let next_states = self.build(current_states, r);
+                let next_states = self.add_regex(current_states, r);
                 let r_cloned: Box<Regex> = r.clone();
-                self.build(&next_states, &Regex::Star(r_cloned))
+                self.add_regex(&next_states, &Regex::Star(r_cloned))
             }
 
             &Regex::Ques(ref r) => {
                 let mut next_states_1 = current_states.to_owned();
-                let mut next_states_2 = self.build(current_states, r);
+                let mut next_states_2 = self.add_regex(current_states, r);
                 next_states_1.append(&mut next_states_2);
                 next_states_1
             }
-        }
-    }
-
-    pub fn finish(self, accepting_states: Vec<usize>) -> NFA {
-        NFA {
-            cur_states: vec![0],
-            transitions: self.transitions,
-            accepting: HashSet::from_iter(accepting_states.into_iter()),
         }
     }
 
@@ -212,7 +254,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn it_works() {
+    fn regex_seq() {
         let cs1 = CharSet::SingleChar('a');
         let cs2 = CharSet::SingleChar('b');
         let cs3 = CharSet::SingleChar('c');
@@ -222,10 +264,125 @@ mod tests {
                                         Box::new(Regex::CharSet(cs3)))));
 
 
-        let mut nfa_builder = NFABuilder::new();
-        let accepting = nfa_builder.build(&vec![0], &r1);
-        let mut nfa = nfa_builder.finish(accepting);
-
+        let mut nfa = NFABuilder::build(&r1);
         assert!(nfa.run("abc".chars()));
+
+        nfa.reset();
+        assert!(!nfa.run("".chars()));
+
+        nfa.reset();
+        assert!(!nfa.run("a".chars()));
+
+        nfa.reset();
+        assert!(!nfa.run("ab".chars()));
+
+        nfa.reset();
+        assert!(!nfa.run("abcd".chars()));
+    }
+
+    #[test]
+    fn regex_or() {
+        let cs1 = CharSet::SingleChar('a');
+        let cs2 = CharSet::SingleChar('b');
+        let cs3 = CharSet::SingleChar('c');
+        let r1  = Regex::Or(
+                    Box::new(Regex::CharSet(cs1)),
+                    Box::new(Regex::Or(Box::new(Regex::CharSet(cs2)),
+                                       Box::new(Regex::CharSet(cs3)))));
+
+        let mut nfa = NFABuilder::build(&r1);
+        assert!(nfa.run("a".chars()));
+
+        nfa.reset();
+        assert!(nfa.run("b".chars()));
+
+        nfa.reset();
+        assert!(nfa.run("c".chars()));
+
+        nfa.reset();
+        assert!(!nfa.run("ac".chars()));
+    }
+
+    #[test]
+    fn regex_eps() {
+        let r1  = Regex::Eps;
+
+        let mut nfa = NFABuilder::build(&r1);
+        assert!(nfa.run("".chars()));
+    }
+
+    #[test]
+    fn regex_star() {
+        let cs1 = CharSet::SingleChar('a');
+        let r1  = Regex::Star(Box::new(Regex::CharSet(cs1)));
+
+        let mut nfa = NFABuilder::build(&r1);
+        assert!(nfa.run("".chars()));
+
+        nfa.reset();
+        assert!(nfa.run("a".chars()));
+
+        nfa.reset();
+        assert!(nfa.run("aa".chars()));
+
+        nfa.reset();
+        assert!(nfa.run("aaa".chars()));
+    }
+
+    #[test]
+    fn regex_plus() {
+        let cs1 = CharSet::SingleChar('a');
+        let r1  = Regex::Plus(Box::new(Regex::CharSet(cs1)));
+
+        let mut nfa = NFABuilder::build(&r1);
+        assert!(!nfa.run("".chars()));
+
+        nfa.reset();
+        assert!(nfa.run("a".chars()));
+
+        nfa.reset();
+        assert!(nfa.run("aa".chars()));
+
+        nfa.reset();
+        assert!(nfa.run("aaa".chars()));
+    }
+
+    #[test]
+    fn regex_ques() {
+        let cs1 = CharSet::SingleChar('a');
+        let r1  = Regex::Ques(Box::new(Regex::CharSet(cs1)));
+
+        let mut nfa = NFABuilder::build(&r1);
+        assert!(nfa.run("".chars()));
+
+        nfa.reset();
+        assert!(nfa.run("a".chars()));
+
+        nfa.reset();
+        assert!(!nfa.run("aa".chars()));
+    }
+
+    #[test]
+    fn regex_complex() {
+        let cs1 = CharSet::SingleChar('a');
+        let cs2 = CharSet::SingleChar('b');
+        let r1  = Regex::Or(
+                    Box::new(Regex::Ques(Box::new(Regex::CharSet(cs1)))),
+                    Box::new(Regex::Ques(Box::new(Regex::CharSet(cs2)))));
+
+        let mut nfa = NFABuilder::build(&r1);
+        assert!(nfa.run("".chars()));
+
+        nfa.reset();
+        assert!(nfa.run("a".chars()));
+
+        nfa.reset();
+        assert!(nfa.run("b".chars()));
+
+        nfa.reset();
+        assert!(!nfa.run("c".chars()));
+
+        nfa.reset();
+        assert!(!nfa.run("ab".chars()));
     }
 }
