@@ -1,52 +1,13 @@
+pub mod charset;
+pub mod charset_parser;
+
 use std::collections::hash_map::Entry;
 use std::collections::HashMap;
 use std::collections::HashSet;
 use std::iter::FromIterator;
 use std::str::Chars;
 
-#[derive(Clone)]
-pub enum CharSet {
-    SingleChar(char),
-
-    Range { lo: char, hi: char },
-
-    AnyChar,
-
-    Diff {
-        include: Box<CharSet>,
-        exclude: Box<CharSet>,
-    },
-
-    Union(Vec<Box<CharSet>>),
-
-    Epsilon,
-}
-
-impl CharSet {
-    pub fn test(&self, c: char) -> bool {
-        match self {
-
-            &CharSet::SingleChar(c1) => c1 == c,
-
-            &CharSet::Range { lo, hi } => c >= lo && c <= hi,
-
-            &CharSet::AnyChar => true,
-
-            &CharSet::Diff { ref include, ref exclude } => include.test(c) && !exclude.test(c),
-
-            &CharSet::Union(ref css) => {
-                for cs in css {
-                    if cs.test(c) {
-                        return true;
-                    }
-                }
-                false
-            }
-
-            &CharSet::Epsilon => true,
-        }
-    }
-}
+pub use charset::CharSet;
 
 pub struct NFA {
     cur_states: HashSet<usize>,
@@ -384,5 +345,38 @@ mod tests {
 
         nfa.reset();
         assert!(!nfa.run("ab".chars()));
+    }
+
+    #[test]
+    fn charset_parsing_1() {
+        let input = "[abcd]";
+        assert_eq!(charset_parser::parse_CharSet0(input),
+                   Ok(CharSet::Union(vec![CharSet::SingleChar('a'),
+                                          CharSet::SingleChar('b'),
+                                          CharSet::SingleChar('c'),
+                                          CharSet::SingleChar('d')])));
+    }
+    #[test]
+    fn charset_parsing_2() {
+        let input = "[a-z] # q";
+        assert_eq!(charset_parser::parse_CharSet0(input),
+                   Ok(CharSet::Diff { include: Box::new(CharSet::Union(vec![CharSet::Range { lo: 'a', hi: 'z' }])),
+                                      exclude: Box::new(CharSet::SingleChar('q')) }));
+    }
+
+    #[test]
+    fn charset_parsing_3() {
+        let input = "\"";
+        assert_eq!(charset_parser::parse_CharSet0(input),
+                   Ok(CharSet::SingleChar('"')));
+    }
+
+    #[test]
+    fn charset_parsing_4() {
+        let input = "[\" ' #]";
+        assert_eq!(charset_parser::parse_CharSet0(input),
+                   Ok(CharSet::Union(vec![CharSet::SingleChar('"'),
+                                          CharSet::SingleChar('\''),
+                                          CharSet::SingleChar('#')])));
     }
 }

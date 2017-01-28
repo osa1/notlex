@@ -2,5 +2,10 @@
 name = "notlex"
 version = "0.1.0"
 authors = ["Ömer Sinan Ağacan <omeragacan@gmail.com>"]
+build = "build.rs"
+
+[build-dependencies]
+lalrpop = "0.12.4"
 
 [dependencies]
+lalrpop-util = "0.12.4"

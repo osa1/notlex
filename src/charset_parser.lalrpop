@@ -1,0 +1,35 @@
+use charset::CharSet;
+
+grammar;
+
+pub CharSet0: CharSet = {
+    <c1:CharSet1> "#" <c2:CharSet1> =>
+        CharSet::Diff { include: Box::new(c1), exclude: Box::new(c2) },
+
+    <c:CharSet1> =>
+        c
+};
+
+pub CharSet1: CharSet = {
+    "." =>
+        CharSet::AnyChar,
+
+    <c:r"."> =>
+        CharSet::SingleChar(c.chars().next().unwrap()),
+
+    // TODO: Why the regex above doesn't match this? lalrpop bug?
+    "#" =>
+        CharSet::SingleChar('#'),
+
+    "[" <cs: CharSet1+> "]" =>
+        CharSet::Union(cs),
+
+    "(" <c: CharSet0> ")" =>
+        c,
+
+    "~" <c: CharSet1> =>
+        CharSet::Diff { include: Box::new(CharSet::AnyChar), exclude: Box::new(c) },
+
+    <c1:r"."> "-" <c2:r"."> =>
+        CharSet::Range { lo: c1.chars().next().unwrap(), hi: c2.chars().next().unwrap() },
+};
